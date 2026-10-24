@@ -1,11 +1,10 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>УРЕЙСКИЙ ЛЕТУН</title>
     <style>
-        /* Подключаем бодрый шрифт Russo One */
         @import url('https://fonts.googleapis.com/css2?family=Russo+One&display=swap');
 
         body {
@@ -48,11 +47,11 @@
             left: 0;
             width: 100%;
             height: 100%;
-            background-image: url('bg.jpg'); /* ВАША КАРТИНКА ЗДЕСЬ */
+            background: linear-gradient(180deg, #4a90d9 0%, #87ceeb 60%, #b0e0e6 100%);
             background-size: cover;
             background-position: center;
             image-rendering: pixelated;
-            filter: contrast(1.2) saturate(1.5) blur(1px);
+            filter: contrast(1.1) saturate(1.2);
             z-index: 1;
         }
 
@@ -176,7 +175,9 @@
             <div id="start-screen">
                 <h1>УРЕЙСКИЙ ЛЕТУН</h1>
                 <p>Тапай по экрану, чтобы лететь!</p>
-                <p>Не влетай в трубы!</p>
+                <p>Уворачивайся от других птиц!</p>
+                <p>Собирай бонусы: 🛡 щит, ⏳ замедление, ⭐ очки, 🔻 уменьшение</p>
+                <p>Охотник снизу отстреливает птиц каждые 9 секунд!</p>
                 <button id="start-btn">ПОГНАЛИ!</button>
             </div>
             
@@ -201,15 +202,79 @@
         const finalScoreEl = document.getElementById('final-score');
         const phraseTextEl = document.getElementById('phrase-text');
 
-        // Забайкальские фразочки
+        // ===== ЗВУК =====
+        let audioCtx = null;
+        let soundEnabled = true;
+
+        function initAudio() {
+            if (!audioCtx) {
+                try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+                catch (e) { soundEnabled = false; }
+            }
+            if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+        }
+
+        function playTone(freq, duration, type = 'square', volume = 0.15, slideTo = null) {
+            if (!soundEnabled || !audioCtx) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = type;
+            osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+            if (slideTo !== null) osc.frequency.exponentialRampToValueAtTime(slideTo, audioCtx.currentTime + duration);
+            gain.gain.setValueAtTime(volume, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            osc.start(); osc.stop(audioCtx.currentTime + duration);
+        }
+
+        function playNoise(duration, volume = 0.2) {
+            if (!soundEnabled || !audioCtx) return;
+            const bufferSize = audioCtx.sampleRate * duration;
+            const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+            const data = buffer.getChannelData(0);
+            for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+            const source = audioCtx.createBufferSource();
+            source.buffer = buffer;
+            const gain = audioCtx.createGain();
+            gain.gain.setValueAtTime(volume, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+            const filter = audioCtx.createBiquadFilter();
+            filter.type = 'lowpass';
+            filter.frequency.setValueAtTime(1200, audioCtx.currentTime);
+            source.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
+            source.start();
+        }
+
+        function sfxJump() { playTone(400, 0.08, 'square', 0.1, 700); }
+        function sfxScore() { playTone(880, 0.06, 'sine', 0.12); setTimeout(() => playTone(1320, 0.08, 'sine', 0.12), 60); }
+        function sfxHit() { playNoise(0.3, 0.25); playTone(150, 0.3, 'sawtooth', 0.15, 40); }
+        function sfxStart() {
+            playTone(523, 0.1, 'square', 0.12);
+            setTimeout(() => playTone(659, 0.1, 'square', 0.12), 100);
+            setTimeout(() => playTone(784, 0.15, 'square', 0.12), 200);
+        }
+        function sfxBonus() {
+            playTone(660, 0.08, 'sine', 0.15);
+            setTimeout(() => playTone(990, 0.1, 'sine', 0.15), 70);
+            setTimeout(() => playTone(1320, 0.12, 'sine', 0.15), 140);
+        }
+        function sfxShieldBreak() { playTone(300, 0.2, 'sawtooth', 0.2, 80); }
+        function sfxShot() { playNoise(0.12, 0.3); playTone(200, 0.12, 'sawtooth', 0.2, 60); }
+        function sfxReload() {
+            // Щелчок затвора
+            playTone(600, 0.04, 'square', 0.1);
+            setTimeout(() => playTone(400, 0.06, 'square', 0.1), 80);
+        }
+
+        // ===== ФРАЗЫ =====
         const phrases = [
             "Ваа, ты пашто голоуши то по зиме шасташ? Быром напялил шапку!",
             "Неее, пойду обутки и монатки упучканые пошиньгаю в бане.",
             "Ты чё моя болташ?",
             "Вот так всё браво и растёть!",
-            "Ну ты и Кеша-курощуп, даже трубы облететь не смог.",
+            "Ну ты и Кеша-курощуп, даже птицу облететь не смог.",
             "Харэ дурью маяться, как зунтугло, делай бравенько!",
-            "Ой, ты какой бравенький, а трубы-то не осилил.",
+            "Ой, ты какой бравенький, а ворону-то не осилил.",
             "Сзади хомут, Ермолаем зовут — вот твой результат.",
             "Дикошарый ты какой-то, аист же!",
             "Ты мояточка, не расстраивайся, попробуй ещё раз.",
@@ -226,48 +291,543 @@
             canvas.height = rect.height;
             canvasWidth = rect.width;
             canvasHeight = rect.height;
-            
             ctx.imageSmoothingEnabled = false;
-            
             scaleFactor = Math.min(canvasWidth / 800, canvasHeight / 600);
             if (scaleFactor < 0.5) scaleFactor = 0.5;
         }
 
         window.addEventListener('resize', () => {
             resizeCanvas();
-            if (!isGameRunning) {
-                bird.y = canvasHeight / 2;
-                bird.draw();
-            }
+            if (!isGameRunning) { bird.y = canvasHeight / 2; bird.draw(); }
         });
 
         let gravity = 0.3;
         let jumpForce = -6;
-        let gameSpeed = 2.5;
         let score = 0;
         let isGameOver = false;
         let isGameRunning = false;
         let frameCount = 0;
 
+        // ===== СЛОЖНОСТЬ =====
+        let difficulty = 1.0;
+        let gameTime = 0;
+        const DIFFICULTY_MAX = 2.2;
+        const DIFFICULTY_RAMP_SCORE = 0.03;
+        const DIFFICULTY_RAMP_TIME = 0.008;
+
+        function updateDifficulty(dt) {
+            gameTime += dt;
+            let fromScore = score * DIFFICULTY_RAMP_SCORE;
+            let fromTime = gameTime * DIFFICULTY_RAMP_TIME;
+            difficulty = 1.0 + Math.min(fromScore + fromTime, DIFFICULTY_MAX - 1.0);
+        }
+
+        // ===== БОНУСЫ =====
+        let shieldTime = 0;
+        let slowTime = 0;
+        let smallTime = 0;
+        let scoreBoostFlash = 0;
+
+        let bonuses = [];
+        let nextBonusAt = 8;
+
+        const BONUS_TYPES = {
+            shield: { color: '#3498db', glow: '#5dade2', symbol: 'S', duration: 5 },
+            slow:   { color: '#1abc9c', glow: '#48c9b0', symbol: 'T', duration: 4 },
+            points: { color: '#f1c40f', glow: '#f7dc6f', symbol: '+', duration: 0 },
+            small:  { color: '#2ecc71', glow: '#58d68d', symbol: 'V', duration: 6 }
+        };
+
+        const BONUS_KEYS = Object.keys(BONUS_TYPES);
+
+        function spawnBonus() {
+            let key = BONUS_KEYS[Math.floor(Math.random() * BONUS_KEYS.length)];
+            let y = Math.random() * (canvasHeight - 120) + 60;
+            bonuses.push({
+                x: canvasWidth + 30,
+                y: y,
+                vx: -(2.2 * scaleFactor),
+                vy: 0,
+                radius: 16 * scaleFactor,
+                typeKey: key,
+                type: BONUS_TYPES[key],
+                phase: Math.random() * Math.PI * 2,
+                rotation: 0
+            });
+        }
+
+        function drawBonus(b) {
+            ctx.save();
+            ctx.translate(b.x, b.y);
+            b.rotation += 0.03;
+
+            let pulse = 1 + Math.sin(frameCount * 0.15 + b.phase) * 0.12;
+            ctx.globalAlpha = 0.35;
+            ctx.fillStyle = b.type.glow;
+            ctx.beginPath();
+            ctx.arc(0, 0, b.radius * 1.7 * pulse, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+
+            ctx.fillStyle = b.type.color;
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 2 * scaleFactor;
+            ctx.beginPath();
+            ctx.arc(0, 0, b.radius * pulse, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.fillStyle = '#fff';
+            ctx.font = `bold ${Math.floor(16 * scaleFactor * pulse)}px 'Russo One'`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(b.type.symbol, 0, 1);
+
+            ctx.restore();
+        }
+
+        function updateBonuses() {
+            if (isGameRunning && !isGameOver) {
+                if (gameTime >= nextBonusAt) {
+                    spawnBonus();
+                    nextBonusAt = gameTime + 7 + Math.random() * 5;
+                }
+            }
+
+            for (let i = bonuses.length - 1; i >= 0; i--) {
+                let b = bonuses[i];
+                b.x += b.vx;
+                b.y += Math.sin(frameCount * 0.05 + b.phase) * 0.5;
+
+                let dx = bird.x - b.x;
+                let dy = bird.y - b.y;
+                let dist = Math.sqrt(dx*dx + dy*dy);
+                let minDist = (bird.hitboxRadius * scaleFactor) + b.radius;
+
+                if (dist < minDist) {
+                    applyBonus(b.typeKey);
+                    bonuses.splice(i, 1);
+                    sfxBonus();
+                    continue;
+                }
+
+                if (b.x < -40) bonuses.splice(i, 1);
+            }
+        }
+
+        function applyBonus(key) {
+            if (key === 'shield') shieldTime = BONUS_TYPES.shield.duration;
+            else if (key === 'slow') slowTime = BONUS_TYPES.slow.duration;
+            else if (key === 'small') smallTime = BONUS_TYPES.small.duration;
+            else if (key === 'points') {
+                score += 5;
+                scoreBoostFlash = 0.6;
+                sfxScore();
+            }
+        }
+
+        // ===== ОХОТНИК (анимированный) =====
+        // Состояния: idle -> aim -> fire -> recoil -> reload -> idle
+        const HUNTER_INTERVAL = 9;
+        let hunterNextShotAt = HUNTER_INTERVAL;
+
+        const hunter = {
+            state: 'idle',        // idle | aim | fire | recoil | reload
+            stateTime: 0,
+            aimTargets: [],       // цели для текущего выстрела
+            shotsFired: 0,
+            shotsToFire: 0,
+            recoil: 0,            // 0..1 отдача
+            barrelAngle: 0,       // текущий угол ствола (радианы, 0 = вверх)
+            breathe: 0,           // фаза дыхания
+            headTurn: 0,          // лёгкий поворот головы
+            casings: [],          // гильзы
+            flash: 0,             // вспышка ствола
+            reloadT: 0            // прогресс перезарядки 0..1
+        };
+
+        function getHunterPosition() {
+            return {
+                x: canvasWidth / 2,
+                y: canvasHeight - 18 * scaleFactor
+            };
+        }
+
+        function hunterAngleTo(tx, ty) {
+            let hp = getHunterPosition();
+            // Ствол смотрит вверх: угол 0 = вверх (отрицательный Y)
+            let dx = tx - hp.x;
+            let dy = ty - (hp.y - 36 * scaleFactor); // от дула
+            // atan2 с инверсией Y, т.к. экранные координаты
+            return Math.atan2(dx, -dy);
+        }
+
+        function startHunterAim() {
+            if (!isGameRunning || isGameOver) return;
+            if (enemies.length === 0) {
+                // Нет целей — просто сдвигаем таймер
+                hunterNextShotAt = gameTime + HUNTER_INTERVAL;
+                return;
+            }
+
+            let count = Math.min(3, enemies.length);
+            let indices = [];
+            let pool = enemies.map((_, i) => i);
+            for (let k = 0; k < count; k++) {
+                let pick = Math.floor(Math.random() * pool.length);
+                indices.push(pool[pick]);
+                pool.splice(pick, 1);
+            }
+
+            hunter.aimTargets = indices.map(i => enemies[i]).filter(e => e);
+            hunter.shotsToFire = hunter.aimTargets.length;
+            hunter.shotsFired = 0;
+            hunter.state = 'aim';
+            hunter.stateTime = 0;
+        }
+
+        function fireAtTarget(target) {
+            if (!target || target._shot) return;
+            let hp = getHunterPosition();
+            let muzzleX = hp.x + Math.sin(hunter.barrelAngle) * 36 * scaleFactor;
+            let muzzleY = hp.y - Math.cos(hunter.barrelAngle) * 36 * scaleFactor;
+
+            hunterShots.push({
+                x1: muzzleX,
+                y1: muzzleY,
+                x2: target.x,
+                y2: target.y,
+                life: 0.25,
+                maxLife: 0.25
+            });
+            target._shot = true;
+            hunter.flash = 0.12;
+            hunter.recoil = 1;
+            sfxShot();
+
+            // Гильза вылетает вбок
+            hunter.casings.push({
+                x: hp.x + 4 * scaleFactor,
+                y: hp.y - 30 * scaleFactor,
+                vx: (Math.random() - 0.5) * 3 * scaleFactor + 2 * scaleFactor,
+                vy: -2 * scaleFactor,
+                rot: Math.random() * Math.PI,
+                vrot: (Math.random() - 0.5) * 0.4,
+                life: 0.8
+            });
+        }
+
+        let hunterShots = [];
+
+        function updateHunter(dt) {
+            // Дыхание и мелкое покачивание всегда
+            hunter.breathe += dt * 1.8;
+            hunter.headTurn = Math.sin(hunter.breathe * 0.5) * 0.05;
+
+            // Запуск цикла по таймеру
+            if (isGameRunning && !isGameOver && hunter.state === 'idle') {
+                if (gameTime >= hunterNextShotAt) {
+                    startHunterAim();
+                }
+            }
+
+            // Обновление состояний
+            hunter.stateTime += dt;
+
+            if (hunter.state === 'aim') {
+                // Плавно наводим ствол на первую цель
+                let target = hunter.aimTargets[hunter.shotsFired];
+                if (target) {
+                    let desired = hunterAngleTo(target.x, target.y);
+                    // Ограничим угол ±60°
+                    desired = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, desired));
+                    hunter.barrelAngle += (desired - hunter.barrelAngle) * Math.min(dt * 10, 1);
+                }
+                // Через 0.35 сек — выстрел
+                if (hunter.stateTime >= 0.35) {
+                    let target = hunter.aimTargets[hunter.shotsFired];
+                    if (target && !target._shot) {
+                        fireAtTarget(target);
+                        hunter.shotsFired++;
+                        hunter.state = 'recoil';
+                        hunter.stateTime = 0;
+                    } else {
+                        // Цель уже исчезла — переходим к следующей
+                        hunter.shotsFired++;
+                        if (hunter.shotsFired >= hunter.shotsToFire) {
+                            hunter.state = 'reload';
+                            hunter.stateTime = 0;
+                            sfxReload();
+                        } else {
+                            hunter.state = 'aim';
+                            hunter.stateTime = 0.2; // быстрее наводимся
+                        }
+                    }
+                }
+            } else if (hunter.state === 'recoil') {
+                hunter.recoil = Math.max(0, hunter.recoil - dt * 6);
+                if (hunter.stateTime >= 0.25) {
+                    hunter.shotsFired++;
+                    if (hunter.shotsFired >= hunter.shotsToFire) {
+                        hunter.state = 'reload';
+                        hunter.stateTime = 0;
+                        sfxReload();
+                    } else {
+                        hunter.state = 'aim';
+                        hunter.stateTime = 0;
+                    }
+                }
+            } else if (hunter.state === 'reload') {
+                hunter.reloadT = Math.min(1, hunter.stateTime / 0.7);
+                // Ствол опускается вниз и возвращается
+                let down = Math.sin(hunter.reloadT * Math.PI); // 0..1..0
+                hunter.barrelAngle = (Math.PI / 2.5) * down * (hunter.barrelAngle >= 0 ? 1 : -1);
+                if (hunter.stateTime >= 0.7) {
+                    hunter.state = 'idle';
+                    hunter.stateTime = 0;
+                    hunter.barrelAngle = 0;
+                    hunter.reloadT = 0;
+                    hunterNextShotAt = gameTime + HUNTER_INTERVAL;
+                }
+            } else {
+                // idle: ствол плавно возвращается в вертикаль
+                hunter.barrelAngle += (0 - hunter.barrelAngle) * Math.min(dt * 5, 1);
+                hunter.recoil = Math.max(0, hunter.recoil - dt * 4);
+            }
+
+            if (hunter.flash > 0) hunter.flash -= dt;
+
+            // Трассеры
+            for (let i = hunterShots.length - 1; i >= 0; i--) {
+                hunterShots[i].life -= dt;
+                if (hunterShots[i].life <= 0) hunterShots.splice(i, 1);
+            }
+
+            // Гильзы
+            for (let i = hunter.casings.length - 1; i >= 0; i--) {
+                let c = hunter.casings[i];
+                c.x += c.vx;
+                c.y += c.vy;
+                c.vy += 0.25 * scaleFactor; // гравитация
+                c.rot += c.vrot;
+                c.life -= dt;
+                if (c.life <= 0) hunter.casings.splice(i, 1);
+            }
+
+            // Удаляем помеченных врагов
+            for (let i = enemies.length - 1; i >= 0; i--) {
+                if (enemies[i]._shot) {
+                    enemies.splice(i, 1);
+                    score++;
+                }
+            }
+        }
+
+        function drawHunter() {
+            let hp = getHunterPosition();
+            let s = scaleFactor;
+
+            // Тень под охотником
+            ctx.save();
+            ctx.globalAlpha = 0.3;
+            ctx.fillStyle = '#000';
+            ctx.beginPath();
+            ctx.ellipse(hp.x, hp.y + 4 * s, 18 * s, 4 * s, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+
+            ctx.save();
+            ctx.translate(hp.x, hp.y);
+
+            // Дыхание: лёгкое вертикальное покачивание
+            let breatheY = Math.sin(hunter.breathe) * 1.2 * s;
+            // Отдача: сдвиг вниз-назад
+            let recoilY = hunter.recoil * 3 * s;
+            let recoilX = hunter.recoil * 2 * s;
+
+            ctx.translate(-recoilX, breatheY + recoilY);
+
+            // Ноги
+            ctx.fillStyle = '#3e2723';
+            ctx.fillRect(-8 * s, 2 * s, 6 * s, 12 * s);
+            ctx.fillRect(2 * s, 2 * s, 6 * s, 12 * s);
+            // Ботинки
+            ctx.fillStyle = '#1b1b1b';
+            ctx.fillRect(-9 * s, 12 * s, 8 * s, 4 * s);
+            ctx.fillRect(1 * s, 12 * s, 8 * s, 4 * s);
+
+            // Туловище (куртка)
+            ctx.fillStyle = '#5d4037';
+            ctx.beginPath();
+            ctx.roundRect(-11 * s, -14 * s, 22 * s, 18 * s, 3 * s);
+            ctx.fill();
+            // Ремень
+            ctx.fillStyle = '#3e2723';
+            ctx.fillRect(-11 * s, -2 * s, 22 * s, 3 * s);
+            ctx.fillStyle = '#d4af37';
+            ctx.fillRect(-2 * s, -2 * s, 4 * s, 3 * s);
+
+            // Руки: одна держит ружьё
+            ctx.fillStyle = '#5d4037';
+            ctx.fillRect(8 * s, -10 * s, 5 * s, 10 * s); // правая рука
+            ctx.fillStyle = '#ffcc80';
+            ctx.fillRect(9 * s, -2 * s, 4 * s, 3 * s);  // кисть
+
+            // Голова
+            ctx.save();
+            ctx.translate(hunter.headTurn * 4 * s, -20 * s);
+            // Шея
+            ctx.fillStyle = '#ffcc80';
+            ctx.fillRect(-3 * s, 3 * s, 6 * s, 4 * s);
+            // Лицо
+            ctx.fillStyle = '#ffcc80';
+            ctx.beginPath();
+            ctx.arc(0, 0, 7 * s, 0, Math.PI * 2);
+            ctx.fill();
+            // Борода
+            ctx.fillStyle = '#5d4037';
+            ctx.beginPath();
+            ctx.arc(0, 3 * s, 5 * s, 0, Math.PI);
+            ctx.fill();
+            // Глаз
+            ctx.fillStyle = '#000';
+            ctx.fillRect(1 * s, -2 * s, 2 * s, 2 * s);
+            // Шапка
+            ctx.fillStyle = '#2e7d32';
+            ctx.beginPath();
+            ctx.arc(0, -4 * s, 7.5 * s, Math.PI, 0);
+            ctx.fill();
+            ctx.fillRect(-7.5 * s, -5 * s, 15 * s, 4 * s);
+            // Помпон
+            ctx.fillStyle = '#81c784';
+            ctx.beginPath();
+            ctx.arc(0, -11 * s, 2.5 * s, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+
+            // Ружьё (поворачивается вокруг плеча)
+            ctx.save();
+            // Точка вращения — у правого плеча
+            ctx.translate(8 * s, -8 * s);
+            ctx.rotate(hunter.barrelAngle);
+
+            // Приклад
+            ctx.fillStyle = '#6d4c41';
+            ctx.fillRect(-2 * s, 8 * s, 6 * s, 10 * s);
+            // Ствол
+            ctx.fillStyle = '#333';
+            ctx.fillRect(-1.5 * s, -28 * s, 3 * s, 36 * s);
+            // Дуло (утолщение)
+            ctx.fillStyle = '#222';
+            ctx.fillRect(-2.5 * s, -30 * s, 5 * s, 4 * s);
+            // Мушка
+            ctx.fillStyle = '#f1c40f';
+            ctx.fillRect(-0.5 * s, -31 * s, 1 * s, 2 * s);
+
+            // Вспышка
+            if (hunter.flash > 0) {
+                let a = hunter.flash / 0.12;
+                ctx.globalAlpha = a;
+                // Звезда вспышки
+                ctx.fillStyle = '#fff59d';
+                ctx.beginPath();
+                ctx.arc(0, -32 * s, 7 * s * a, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#ffeb3b';
+                ctx.beginPath();
+                ctx.arc(0, -32 * s, 4 * s * a, 0, Math.PI * 2);
+                ctx.fill();
+                // Лучи
+                ctx.strokeStyle = '#ffeb3b';
+                ctx.lineWidth = 1.5 * s;
+                for (let k = 0; k < 6; k++) {
+                    let ang = (k / 6) * Math.PI * 2 + hunter.flash * 20;
+                    ctx.beginPath();
+                    ctx.moveTo(Math.cos(ang) * 5 * s, -32 * s + Math.sin(ang) * 5 * s);
+                    ctx.lineTo(Math.cos(ang) * 10 * s * a, -32 * s + Math.sin(ang) * 10 * s * a);
+                    ctx.stroke();
+                }
+                ctx.globalAlpha = 1;
+            }
+
+            ctx.restore();
+
+            ctx.restore();
+
+            // Гильзы
+            hunter.casings.forEach(c => {
+                ctx.save();
+                ctx.translate(c.x, c.y);
+                ctx.rotate(c.rot);
+                ctx.globalAlpha = Math.min(1, c.life * 2);
+                ctx.fillStyle = '#f1c40f';
+                ctx.fillRect(-1.5 * s, -2 * s, 3 * s, 4 * s);
+                ctx.fillStyle = '#b8860b';
+                ctx.fillRect(-1.5 * s, -2 * s, 3 * s, 1 * s);
+                ctx.restore();
+            });
+        }
+
+        function drawHunterShots() {
+            hunterShots.forEach(shot => {
+                let alpha = shot.life / shot.maxLife;
+                ctx.save();
+                ctx.globalAlpha = alpha;
+
+                // Градиентный трассер: толстый у ствола, тонкий у цели
+                let grad = ctx.createLinearGradient(shot.x1, shot.y1, shot.x2, shot.y2);
+                grad.addColorStop(0, 'rgba(255, 235, 59, 0.9)');
+                grad.addColorStop(1, 'rgba(255, 152, 0, 0.2)');
+                ctx.strokeStyle = grad;
+                ctx.lineWidth = 2.5 * scaleFactor;
+                ctx.beginPath();
+                ctx.moveTo(shot.x1, shot.y1);
+                ctx.lineTo(shot.x2, shot.y2);
+                ctx.stroke();
+
+                // Вспышка на конце
+                ctx.fillStyle = '#ff5722';
+                ctx.beginPath();
+                ctx.arc(shot.x2, shot.y2, 5 * scaleFactor * alpha, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#fff59d';
+                ctx.beginPath();
+                ctx.arc(shot.x2, shot.y2, 2.5 * scaleFactor * alpha, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            });
+        }
+
+        // ===== ПТИЦА =====
         const bird = {
             x: 150,
             y: 300,
             width: 32,
             height: 32,
+            baseHitboxRadius: 12,
             velocity: 0,
+            get hitboxRadius() {
+                return smallTime > 0 ? this.baseHitboxRadius * 0.6 : this.baseHitboxRadius;
+            },
             draw: function() {
                 ctx.save();
                 ctx.translate(this.x, this.y);
-                
                 let angle = Math.min(Math.max(this.velocity * 0.05, -0.5), 1.5);
                 ctx.rotate(angle);
-                
-                // Тело
+
+                let alpha = 1;
+                if (shieldTime > 0) {
+                    alpha = 0.6 + Math.sin(frameCount * 0.5) * 0.4;
+                }
+                ctx.globalAlpha = alpha;
+
+                let bodyScale = smallTime > 0 ? 0.75 : 1;
+                ctx.scale(bodyScale, bodyScale);
+
                 ctx.fillStyle = '#ffffff';
                 ctx.fillRect(-8, -8, 20, 16);
-                ctx.fillRect(-4, -12, 12, 8); 
-                
-                // Крылья
+                ctx.fillRect(-4, -12, 12, 8);
+
                 ctx.fillStyle = '#000000';
                 if (this.velocity < 0) {
                     ctx.fillRect(-16, -12, 8, 8);
@@ -276,19 +836,26 @@
                     ctx.fillRect(-16, 4, 8, 8);
                     ctx.fillRect(8, 4, 8, 8);
                 }
-                
-                // Клюв
+
                 ctx.fillStyle = '#e74c3c';
                 ctx.fillRect(8, -8, 8, 4);
-                
-                // Ноги
+
                 ctx.fillRect(-4, 8, 4, 8);
                 ctx.fillRect(4, 8, 4, 8);
-
-                // Пятно
                 ctx.fillRect(0, -12, 4, 4);
-
                 ctx.restore();
+
+                if (shieldTime > 0) {
+                    ctx.save();
+                    ctx.translate(this.x, this.y);
+                    ctx.globalAlpha = 0.5 + Math.sin(frameCount * 0.3) * 0.3;
+                    ctx.strokeStyle = '#3498db';
+                    ctx.lineWidth = 2 * scaleFactor;
+                    ctx.beginPath();
+                    ctx.arc(0, 0, 26 * scaleFactor, 0, Math.PI * 2);
+                    ctx.stroke();
+                    ctx.restore();
+                }
             },
             update: function() {
                 this.velocity += gravity * scaleFactor;
@@ -306,89 +873,139 @@
             jump: function() {
                 if (!isGameOver && isGameRunning) {
                     this.velocity = jumpForce * scaleFactor;
+                    sfxJump();
                 }
             }
         };
 
-        let pipes = [];
-        let pipeWidth = 50;
-        let pipeGap = 160;
+        let enemies = [];
 
-        function spawnPipe() {
-            let currentGap = pipeGap * scaleFactor;
-            if (currentGap < 120) currentGap = 120;
+        const enemyTypes = {
+            crow:   { bodyColor: '#444', wingColor: '#111', beakColor: '#f1c40f', eyeColor: '#e74c3c', width: 32, height: 32, speedMin: 2.5, speedMax: 4.0, homingChance: 0.4, scale: 1.0 },
+            hawk:   { bodyColor: '#8b4513', wingColor: '#5a2d0c', beakColor: '#ffd700', eyeColor: '#ff4500', width: 36, height: 36, speedMin: 3.5, speedMax: 5.0, homingChance: 0.7, scale: 1.15 },
+            pigeon: { bodyColor: '#9aa0a6', wingColor: '#6b7075', beakColor: '#d4a017', eyeColor: '#ff6b6b', width: 28, height: 28, speedMin: 2.0, speedMax: 3.0, homingChance: 0.15, scale: 0.9 },
+            eagle:  { bodyColor: '#2c1810', wingColor: '#1a0f08', beakColor: '#ffaa00', eyeColor: '#ffff00', width: 44, height: 44, speedMin: 2.0, speedMax: 3.0, homingChance: 0.5, scale: 1.4 }
+        };
 
-            let minHeight = 50 * scaleFactor;
-            let maxHeight = canvasHeight - currentGap - (50 * scaleFactor);
-            
-            if (maxHeight <= minHeight) maxHeight = minHeight + 50;
+        function pickEnemyType() {
+            let roll = Math.random();
+            let t = Math.min((difficulty - 1.0) / (DIFFICULTY_MAX - 1.0), 1.0);
+            let crowCut = 0.45 - 0.15 * t;
+            let pigeonCut = crowCut + (0.25 - 0.10 * t);
+            let hawkCut = pigeonCut + (0.20 + 0.15 * t);
+            if (roll < crowCut) return 'crow';
+            if (roll < pigeonCut) return 'pigeon';
+            if (roll < hawkCut) return 'hawk';
+            return 'eagle';
+        }
 
-            let topHeight = Math.floor(Math.random() * (maxHeight - minHeight + 1)) + minHeight;
-            
-            pipes.push({
-                x: canvasWidth,
-                topHeight: topHeight,
-                bottomY: topHeight + currentGap,
-                passed: false,
-                width: pipeWidth * scaleFactor
+        function drawEnemy(enemy) {
+            const t = enemy.type;
+            ctx.save();
+            ctx.translate(enemy.x, enemy.y);
+            let angle = Math.atan2(enemy.vy, enemy.vx);
+            ctx.rotate(angle);
+            ctx.scale(-1, -1);
+            const s = t.scale;
+            ctx.scale(s, s);
+
+            ctx.fillStyle = t.bodyColor;
+            ctx.fillRect(-8, -8, 20, 16);
+            ctx.fillRect(-4, -12, 12, 8);
+
+            ctx.fillStyle = t.wingColor;
+            let wingOffset = Math.sin(frameCount * 0.3 + enemy.wingPhase) * 3;
+            ctx.fillRect(-16, -12 + wingOffset, 8, 8);
+            ctx.fillRect(8, -12 - wingOffset, 8, 8);
+
+            ctx.fillStyle = t.beakColor;
+            ctx.fillRect(8, -8, 10, 4);
+
+            ctx.fillStyle = t.eyeColor;
+            ctx.fillRect(2, -10, 4, 4);
+
+            ctx.fillStyle = '#000';
+            ctx.fillRect(-4, 8, 4, 8);
+            ctx.fillRect(4, 8, 4, 8);
+            ctx.restore();
+        }
+
+        function spawnEnemy() {
+            let typeName = pickEnemyType();
+            let t = enemyTypes[typeName];
+            let spawnY = Math.random() * (canvasHeight - 80) + 40;
+            let speedMul = 1 + (difficulty - 1.0) * 0.35;
+            let baseSpeed = (t.speedMin + Math.random() * (t.speedMax - t.speedMin));
+            let speed = baseSpeed * speedMul * scaleFactor;
+            let homingChance = Math.min(t.homingChance * (1 + (difficulty - 1.0) * 0.3), 0.95);
+            let isHoming = Math.random() < homingChance;
+            let homingStrength = (0.04 + Math.random() * 0.03) * (1 + (difficulty - 1.0) * 0.25);
+
+            enemies.push({
+                x: canvasWidth + 40,
+                y: spawnY,
+                vx: -speed,
+                vy: 0,
+                width: t.width,
+                height: t.height,
+                hitboxRadius: t.width * 0.4,
+                homing: isHoming,
+                homingStrength: homingStrength,
+                type: t,
+                typeName: typeName,
+                wingPhase: Math.random() * Math.PI * 2,
+                _shot: false
             });
         }
 
-        function drawPipes() {
-            pipes.forEach(pipe => {
-                let capHeight = 20 * scaleFactor;
-                let capExtra = 5 * scaleFactor;
-
-                ctx.fillStyle = '#2e7d32'; 
-                ctx.fillRect(pipe.x, 0, pipe.width, pipe.topHeight);
-                
-                ctx.fillStyle = '#1b5e20';
-                ctx.fillRect(pipe.x - capExtra, pipe.topHeight - capHeight, pipe.width + (capExtra*2), capHeight);
-
-                ctx.fillStyle = '#2e7d32';
-                ctx.fillRect(pipe.x, pipe.bottomY, pipe.width, canvasHeight - pipe.bottomY);
-                
-                ctx.fillStyle = '#1b5e20';
-                ctx.fillRect(pipe.x - capExtra, pipe.bottomY, pipe.width + (capExtra*2), capHeight);
-                
-                ctx.fillStyle = '#4caf50';
-                ctx.fillRect(pipe.x + 5, 0, 5 * scaleFactor, pipe.topHeight);
-                ctx.fillRect(pipe.x + 5, pipe.bottomY, 5 * scaleFactor, canvasHeight - pipe.bottomY);
-            });
-        }
-
-        function updatePipes() {
-            let spawnRate = 100;
-            if (scaleFactor < 0.8) spawnRate = 120; 
-
-            if (frameCount % spawnRate === 0 && isGameRunning && !isGameOver) {
-                spawnPipe();
+        function updateEnemies() {
+            if (isGameRunning && !isGameOver) {
+                let spawnChance = 0.012 + (difficulty - 1.0) * 0.012;
+                spawnChance *= (0.85 + Math.random() * 0.3);
+                if (Math.random() < spawnChance) spawnEnemy();
             }
 
-            for (let i = pipes.length - 1; i >= 0; i--) {
-                let p = pipes[i];
-                p.x -= gameSpeed * scaleFactor;
+            let slowMul = slowTime > 0 ? 0.5 : 1;
 
-                let birdLeft = bird.x - bird.width/2;
-                let birdRight = bird.x + bird.width/2;
-                let birdTop = bird.y - bird.height/2;
-                let birdBottom = bird.y + bird.height/2;
-
-                if (
-                    birdRight > p.x &&
-                    birdLeft < p.x + p.width &&
-                    (birdTop < p.topHeight || birdBottom > p.bottomY)
-                ) {
-                    isGameOver = true;
+            for (let i = enemies.length - 1; i >= 0; i--) {
+                let e = enemies[i];
+                if (e._shot) continue;
+                
+                if (e.homing && isGameRunning && !isGameOver) {
+                    let dy = bird.y - e.y;
+                    let dx = bird.x - e.x;
+                    let dist = Math.sqrt(dx*dx + dy*dy);
+                    if (dist > 0) {
+                        let targetVy = (dy / dist) * Math.abs(e.vx) * 1.2;
+                        e.vy += (targetVy - e.vy) * e.homingStrength;
+                    }
                 }
-
-                if (p.x + p.width < birdLeft && !p.passed) {
-                    p.passed = true;
+                
+                e.x += e.vx * slowMul;
+                e.y += e.vy * slowMul;
+                
+                if (e.y < 20) { e.y = 20; e.vy = Math.abs(e.vy) * 0.5; }
+                if (e.y > canvasHeight - 20) { e.y = canvasHeight - 20; e.vy = -Math.abs(e.vy) * 0.5; }
+                
+                let dx = bird.x - e.x;
+                let dy = bird.y - e.y;
+                let dist = Math.sqrt(dx*dx + dy*dy);
+                let minDist = bird.hitboxRadius * scaleFactor + e.hitboxRadius * scaleFactor;
+                
+                if (dist < minDist) {
+                    if (shieldTime > 0) {
+                        enemies.splice(i, 1);
+                        sfxShieldBreak();
+                        continue;
+                    } else {
+                        isGameOver = true;
+                    }
+                }
+                
+                if (e.x < -80) {
+                    enemies.splice(i, 1);
                     score++;
-                }
-
-                if (p.x + p.width < 0) {
-                    pipes.splice(i, 1);
+                    sfxScore();
                 }
             }
         }
@@ -397,7 +1014,6 @@
             ctx.fillStyle = '#fff';
             let fontSize = 30 * scaleFactor;
             if (fontSize < 16) fontSize = 16;
-            
             ctx.font = `bold ${fontSize}px 'Russo One'`;
             ctx.strokeStyle = '#000';
             ctx.lineWidth = 4 * scaleFactor;
@@ -408,29 +1024,92 @@
             ctx.fillText(text, canvasWidth / 2, 60 * scaleFactor);
         }
 
-        function gameLoop() {
+        function drawActiveEffects() {
+            let x = 20 * scaleFactor;
+            let y = 20 * scaleFactor;
+            let size = 26 * scaleFactor;
+            let gap = 8 * scaleFactor;
+
+            function drawIcon(label, color, timeLeft, maxTime) {
+                ctx.save();
+                ctx.fillStyle = color;
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 2 * scaleFactor;
+                ctx.beginPath();
+                ctx.arc(x + size/2, y + size/2, size/2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.stroke();
+                ctx.fillStyle = '#fff';
+                ctx.font = `bold ${Math.floor(14 * scaleFactor)}px 'Russo One'`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(label, x + size/2, y + size/2 + 1);
+                
+                ctx.fillStyle = 'rgba(0,0,0,0.5)';
+                ctx.fillRect(x, y + size + 2, size, 4 * scaleFactor);
+                ctx.fillStyle = color;
+                ctx.fillRect(x, y + size + 2, size * (timeLeft / maxTime), 4 * scaleFactor);
+                ctx.restore();
+                x += size + gap;
+            }
+
+            if (shieldTime > 0) drawIcon('S', '#3498db', shieldTime, BONUS_TYPES.shield.duration);
+            if (slowTime > 0) drawIcon('T', '#1abc9c', slowTime, BONUS_TYPES.slow.duration);
+            if (smallTime > 0) drawIcon('V', '#2ecc71', smallTime, BONUS_TYPES.small.duration);
+        }
+
+        let lastTime = 0;
+        function gameLoop(timestamp) {
+            if (!lastTime) lastTime = timestamp;
+            let dt = Math.min((timestamp - lastTime) / 1000, 0.05);
+            lastTime = timestamp;
+
             ctx.clearRect(0, 0, canvasWidth, canvasHeight);
 
             if (isGameRunning && !isGameOver) {
+                updateDifficulty(dt);
+
+                if (shieldTime > 0) shieldTime -= dt;
+                if (slowTime > 0) slowTime -= dt;
+                if (smallTime > 0) smallTime -= dt;
+                if (scoreBoostFlash > 0) scoreBoostFlash -= dt;
+
                 bird.update();
-                updatePipes();
+                updateEnemies();
+                updateBonuses();
+                updateHunter(dt);
                 frameCount++;
             }
 
-            drawPipes();
+            drawHunter();
+            drawHunterShots();
+
+            bonuses.forEach(b => drawBonus(b));
+            enemies.forEach(e => drawEnemy(e));
             bird.draw();
             
             if (isGameRunning || isGameOver) {
                 drawScore();
+                drawActiveEffects();
+            }
+
+            if (scoreBoostFlash > 0) {
+                ctx.save();
+                ctx.globalAlpha = scoreBoostFlash;
+                ctx.fillStyle = '#f1c40f';
+                ctx.font = `bold ${36 * scaleFactor}px 'Russo One'`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('+5', canvasWidth / 2, canvasHeight / 2 - 40 * scaleFactor);
+                ctx.restore();
             }
 
             if (isGameOver && isGameRunning) {
                 isGameRunning = false;
+                sfxHit();
                 finalScoreEl.innerText = score;
-                
                 const randomPhrase = phrases[Math.floor(Math.random() * phrases.length)];
                 phraseTextEl.innerText = randomPhrase;
-                
                 gameOverScreen.classList.remove('hidden');
             }
 
@@ -438,81 +1117,69 @@
         }
 
         function handleAction() {
-            if (!isGameRunning && !isGameOver) {
-                startGame();
-            } else if (isGameRunning && !isGameOver) {
-                bird.jump();
-            }
+            initAudio();
+            if (!isGameRunning && !isGameOver) startGame();
+            else if (isGameRunning && !isGameOver) bird.jump();
         }
 
-        canvas.addEventListener('mousedown', (e) => {
-            e.preventDefault();
-            handleAction();
-        });
-
+        canvas.addEventListener('mousedown', (e) => { e.preventDefault(); handleAction(); });
         window.addEventListener('keydown', (e) => {
-            if (e.code === 'Space' || e.code === 'ArrowUp') {
-                e.preventDefault();
-                handleAction();
-            }
+            if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); handleAction(); }
         });
-
-        canvas.addEventListener('touchstart', (e) => {
-            e.preventDefault(); 
-            handleAction();
-        }, { passive: false });
-
+        canvas.addEventListener('touchstart', (e) => { e.preventDefault(); handleAction(); }, { passive: false });
         document.body.addEventListener('touchmove', (e) => {
-            if (e.target === canvas || e.target === document.body) {
-                e.preventDefault();
-            }
+            if (e.target === canvas || e.target === document.body) e.preventDefault();
         }, { passive: false });
 
-        startBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            startGame();
-        });
-        startBtn.addEventListener('touchstart', (e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            startGame();
-        }, { passive: false });
-
-        restartBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            startGame();
-        });
-        restartBtn.addEventListener('touchstart', (e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            startGame();
-        }, { passive: false });
+        startBtn.addEventListener('click', (e) => { e.stopPropagation(); initAudio(); startGame(); });
+        startBtn.addEventListener('touchstart', (e) => { e.stopPropagation(); e.preventDefault(); initAudio(); startGame(); }, { passive: false });
+        restartBtn.addEventListener('click', (e) => { e.stopPropagation(); initAudio(); startGame(); });
+        restartBtn.addEventListener('touchstart', (e) => { e.stopPropagation(); e.preventDefault(); initAudio(); startGame(); }, { passive: false });
 
         function startGame() {
+            initAudio();
             isGameRunning = true;
             isGameOver = false;
             score = 0;
             bird.y = canvasHeight / 2;
             bird.velocity = 0;
-            pipes = [];
+            enemies = [];
+            bonuses = [];
+            hunterShots = [];
             frameCount = 0;
+            gameTime = 0;
+            difficulty = 1.0;
+            lastTime = 0;
+            shieldTime = 0;
+            slowTime = 0;
+            smallTime = 0;
+            scoreBoostFlash = 0;
+            nextBonusAt = 6;
+            hunterNextShotAt = HUNTER_INTERVAL;
+            hunter.state = 'idle';
+            hunter.stateTime = 0;
+            hunter.aimTargets = [];
+            hunter.shotsFired = 0;
+            hunter.shotsToFire = 0;
+            hunter.recoil = 0;
+            hunter.barrelAngle = 0;
+            hunter.breathe = 0;
+            hunter.headTurn = 0;
+            hunter.casings = [];
+            hunter.flash = 0;
+            hunter.reloadT = 0;
             
             startScreen.classList.add('hidden');
             gameOverScreen.classList.add('hidden');
             
-            spawnPipe();
+            sfxStart();
         }
 
         window.addEventListener('load', () => {
             resizeCanvas();
             bird.y = canvasHeight / 2;
-            bird.draw();
-            gameLoop();
+            requestAnimationFrame(gameLoop);
         });
-
-        resizeCanvas();
-        bird.y = canvasHeight / 2;
-        gameLoop();
     </script>
 </body>
 </html>
