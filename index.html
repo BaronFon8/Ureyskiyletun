@@ -47,12 +47,27 @@
             left: 0;
             width: 100%;
             height: 100%;
-            background: linear-gradient(180deg, #4a90d9 0%, #87ceeb 60%, #b0e0e6 100%);
+            /* ФОТО НА ФОНЕ */
+            background-image: url('bg.jpg'); /* <--- ИМЯ ФАЙЛА С ФОТО */
             background-size: cover;
             background-position: center;
+            background-repeat: no-repeat;
             image-rendering: pixelated;
-            filter: contrast(1.1) saturate(1.2);
+            /* Чуть увеличиваем контраст и насыщенность, чтобы пиксельные элементы смотрелись лучше */
+            filter: contrast(1.1) saturate(1.2) brightness(0.9);
             z-index: 1;
+        }
+
+        /* Легкое затемнение поверх фото, чтобы птицы и UI не сливались с фоном */
+        #background::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.2);
+            pointer-events: none;
         }
 
         #pixel-grid {
@@ -543,14 +558,11 @@
             let target = findClosestEnemyToBird();
             if (!target) return;
 
-            // Если охотник занят (aim/recoil/reload) — не мешаем, но сбрасываем таймер,
-            // чтобы после он мог выстрелить снова.
             if (hunter.state !== 'idle') {
                 panicNextAt = gameTime + PANIC_COOLDOWN * 0.5;
                 return;
             }
 
-            // Наводим ствол на цель и стреляем
             let desired = hunterAngleTo(target.x, target.y);
             desired = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, desired));
             hunter.barrelAngle = desired;
@@ -669,8 +681,6 @@
                     hunter.stateTime = 0;
                     hunter.barrelAngle = 0;
                     hunter.reloadT = 0;
-                    // Если это был обычный залп — сдвигаем таймер.
-                    // Аварийные выстрелы не должны сбивать общий таймер.
                     if (hunter.shotsToFire > 1) {
                         hunterNextShotAt = gameTime + HUNTER_INTERVAL;
                     }
