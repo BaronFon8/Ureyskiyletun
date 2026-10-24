@@ -175,9 +175,12 @@
             <div id="start-screen">
                 <h1>УРЕЙСКИЙ ЛЕТУН</h1>
                 <p>Тапай по экрану, чтобы лететь!</p>
-                <p>Уворачивайся от других птиц!</p>
+                <p>Уворачивайся от птиц!</p>
                 <p>Собирай бонусы: 🛡 щит, ⏳ замедление, ⭐ очки, 🔻 уменьшение</p>
                 <p>Охотник снизу отстреливает птиц каждые 9 секунд!</p>
+                <p>Если птиц слишком много — охотник бьёт по ближайшей!</p>
+                <p>Босс — каждые 50 очков!</p>
+                <p>Ястреб даёт 2 очка, орёл — 3, редкие птицы — 3–4!</p>
                 <button id="start-btn">ПОГНАЛИ!</button>
             </div>
             
@@ -261,9 +264,16 @@
         function sfxShieldBreak() { playTone(300, 0.2, 'sawtooth', 0.2, 80); }
         function sfxShot() { playNoise(0.12, 0.3); playTone(200, 0.12, 'sawtooth', 0.2, 60); }
         function sfxReload() {
-            // Щелчок затвора
             playTone(600, 0.04, 'square', 0.1);
             setTimeout(() => playTone(400, 0.06, 'square', 0.1), 80);
+        }
+        function sfxBossRoar() {
+            playTone(120, 0.5, 'sawtooth', 0.25, 60);
+            setTimeout(() => playTone(90, 0.6, 'sawtooth', 0.25, 50), 200);
+        }
+        function sfxBossHit() {
+            playNoise(0.1, 0.2);
+            playTone(400, 0.1, 'square', 0.15, 250);
         }
 
         // ===== ФРАЗЫ =====
@@ -308,17 +318,48 @@
         let isGameRunning = false;
         let frameCount = 0;
 
+        // ===== ОЧКИ ЗА ВРАГОВ =====
+        const POINTS_BY_TYPE = {
+            crow: 1,
+            pigeon: 1,
+            hawk: 2,
+            eagle: 3
+        };
+        const POINTS_RARE = {
+            dive: 4,
+            kamikaze: 3,
+            flock: 2,
+            wounded: 3,
+            boss: 10
+        };
+
+        function enemyPoints(e) {
+            if (e.isBoss) return POINTS_RARE.boss;
+            if (e.kind === 'dive') return POINTS_RARE.dive;
+            if (e.kind === 'kamikaze') return POINTS_RARE.kamikaze;
+            if (e.kind === 'wounded') return POINTS_RARE.wounded;
+            if (e.flock) return POINTS_RARE.flock;
+            return POINTS_BY_TYPE[e.typeName] || 1;
+        }
+
         // ===== СЛОЖНОСТЬ =====
         let difficulty = 1.0;
         let gameTime = 0;
+        let firstBossDefeated = false;
         const DIFFICULTY_MAX = 2.2;
         const DIFFICULTY_RAMP_SCORE = 0.03;
         const DIFFICULTY_RAMP_TIME = 0.008;
 
         function updateDifficulty(dt) {
             gameTime += dt;
-            let fromScore = score * DIFFICULTY_RAMP_SCORE;
-            let fromTime = gameTime * DIFFICULTY_RAMP_TIME;
+            let rampScore = DIFFICULTY_RAMP_SCORE;
+            let rampTime = DIFFICULTY_RAMP_TIME;
+            if (!firstBossDefeated) {
+                rampScore *= 0.5;
+                rampTime *= 0.5;
+            }
+            let fromScore = score * rampScore;
+            let fromTime = gameTime * rampTime;
             difficulty = 1.0 + Math.min(fromScore + fromTime, DIFFICULTY_MAX - 1.0);
         }
 
@@ -426,65 +467,104 @@
             }
         }
 
-        // ===== ОХОТНИК (анимированный) =====
-        // Состояния: idle -> aim -> fire -> recoil -> reload -> idle
+        // ===== ОХОТНИК =====
         const HUNTER_INTERVAL = 9;
         let hunterNextShotAt = HUNTER_INTERVAL;
+        // Аварийный режим: если врагов больше порога — стреляем по ближайшему
+        const CROWD_THRESHOLD = 7;       // порог «слишком много птиц»
+        const PANIC_COOLDOWN = 1.2;      // секунд между аварийными выстрелами
+        let panicNextAt = 0;
 
         const hunter = {
-            state: 'idle',        // idle | aim | fire | recoil | reload
+            state: 'idle',
             stateTime: 0,
-            aimTargets: [],       // цели для текущего выстрела
+            aimTargets: [],
             shotsFired: 0,
             shotsToFire: 0,
-            recoil: 0,            // 0..1 отдача
-            barrelAngle: 0,       // текущий угол ствола (радианы, 0 = вверх)
-            breathe: 0,           // фаза дыхания
-            headTurn: 0,          // лёгкий поворот головы
-            casings: [],          // гильзы
-            flash: 0,             // вспышка ствола
-            reloadT: 0            // прогресс перезарядки 0..1
+            recoil: 0,
+            barrelAngle: 0,
+            breathe: 0,
+            headTurn: 0,
+            casings: [],
+            flash: 0,
+            reloadT: 0
         };
 
         function getHunterPosition() {
-            return {
-                x: canvasWidth / 2,
-                y: canvasHeight - 18 * scaleFactor
-            };
+            return { x: canvasWidth / 2, y: canvasHeight - 18 * scaleFactor };
         }
 
         function hunterAngleTo(tx, ty) {
             let hp = getHunterPosition();
-            // Ствол смотрит вверх: угол 0 = вверх (отрицательный Y)
             let dx = tx - hp.x;
-            let dy = ty - (hp.y - 36 * scaleFactor); // от дула
-            // atan2 с инверсией Y, т.к. экранные координаты
+            let dy = ty - (hp.y - 36 * scaleFactor);
             return Math.atan2(dx, -dy);
+        }
+
+        // Ближайший к птице враг (по расстоянию до птицы), кроме уже помеченных
+        function findClosestEnemyToBird() {
+            let best = null;
+            let bestDist = Infinity;
+            for (let e of enemies) {
+                if (e._shot) continue;
+                let dx = e.x - bird.x;
+                let dy = e.y - bird.y;
+                let d = dx*dx + dy*dy;
+                if (d < bestDist) { bestDist = d; best = e; }
+            }
+            return best;
         }
 
         function startHunterAim() {
             if (!isGameRunning || isGameOver) return;
-            if (enemies.length === 0) {
-                // Нет целей — просто сдвигаем таймер
+            let targets = [];
+            let boss = enemies.find(e => e.isBoss && !e._shot);
+            if (boss) targets.push(boss);
+            let pool = enemies.filter(e => !e.isBoss && !e._shot);
+            while (targets.length < 3 && pool.length > 0) {
+                let pick = Math.floor(Math.random() * pool.length);
+                targets.push(pool[pick]);
+                pool.splice(pick, 1);
+            }
+            if (targets.length === 0) {
                 hunterNextShotAt = gameTime + HUNTER_INTERVAL;
                 return;
             }
-
-            let count = Math.min(3, enemies.length);
-            let indices = [];
-            let pool = enemies.map((_, i) => i);
-            for (let k = 0; k < count; k++) {
-                let pick = Math.floor(Math.random() * pool.length);
-                indices.push(pool[pick]);
-                pool.splice(pick, 1);
-            }
-
-            hunter.aimTargets = indices.map(i => enemies[i]).filter(e => e);
-            hunter.shotsToFire = hunter.aimTargets.length;
+            hunter.aimTargets = targets;
+            hunter.shotsToFire = targets.length;
             hunter.shotsFired = 0;
             hunter.state = 'aim';
             hunter.stateTime = 0;
         }
+
+        // Аварийный выстрел: один, по ближайшему к птице врагу
+        function panicShot() {
+            if (!isGameRunning || isGameOver) return;
+            let target = findClosestEnemyToBird();
+            if (!target) return;
+
+            // Если охотник занят (aim/recoil/reload) — не мешаем, но сбрасываем таймер,
+            // чтобы после он мог выстрелить снова.
+            if (hunter.state !== 'idle') {
+                panicNextAt = gameTime + PANIC_COOLDOWN * 0.5;
+                return;
+            }
+
+            // Наводим ствол на цель и стреляем
+            let desired = hunterAngleTo(target.x, target.y);
+            desired = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, desired));
+            hunter.barrelAngle = desired;
+
+            fireAtTarget(target);
+            hunter.recoil = 1;
+            hunter.state = 'recoil';
+            hunter.stateTime = 0;
+            hunter.shotsToFire = 1;
+            hunter.shotsFired = 1;
+            panicNextAt = gameTime + PANIC_COOLDOWN;
+        }
+
+        let hunterShots = [];
 
         function fireAtTarget(target) {
             if (!target || target._shot) return;
@@ -493,19 +573,24 @@
             let muzzleY = hp.y - Math.cos(hunter.barrelAngle) * 36 * scaleFactor;
 
             hunterShots.push({
-                x1: muzzleX,
-                y1: muzzleY,
-                x2: target.x,
-                y2: target.y,
-                life: 0.25,
-                maxLife: 0.25
+                x1: muzzleX, y1: muzzleY,
+                x2: target.x, y2: target.y,
+                life: 0.25, maxLife: 0.25
             });
-            target._shot = true;
+            if (target.isBoss) {
+                target.hp -= 1;
+                sfxBossHit();
+                if (target.hp <= 0) {
+                    target._shot = true;
+                    score += POINTS_RARE.boss;
+                }
+            } else {
+                target._shot = true;
+            }
             hunter.flash = 0.12;
             hunter.recoil = 1;
             sfxShot();
 
-            // Гильза вылетает вбок
             hunter.casings.push({
                 x: hp.x + 4 * scaleFactor,
                 y: hp.y - 30 * scaleFactor,
@@ -517,33 +602,32 @@
             });
         }
 
-        let hunterShots = [];
-
         function updateHunter(dt) {
-            // Дыхание и мелкое покачивание всегда
             hunter.breathe += dt * 1.8;
             hunter.headTurn = Math.sin(hunter.breathe * 0.5) * 0.05;
 
-            // Запуск цикла по таймеру
-            if (isGameRunning && !isGameOver && hunter.state === 'idle') {
-                if (gameTime >= hunterNextShotAt) {
-                    startHunterAim();
+            // Аварийный режим: слишком много птиц
+            if (isGameRunning && !isGameOver) {
+                let aliveCount = enemies.reduce((n, e) => n + (e._shot ? 0 : 1), 0);
+                if (aliveCount >= CROWD_THRESHOLD && gameTime >= panicNextAt) {
+                    panicShot();
                 }
             }
 
-            // Обновление состояний
+            // Обычный цикл по таймеру
+            if (isGameRunning && !isGameOver && hunter.state === 'idle') {
+                if (gameTime >= hunterNextShotAt) startHunterAim();
+            }
+
             hunter.stateTime += dt;
 
             if (hunter.state === 'aim') {
-                // Плавно наводим ствол на первую цель
                 let target = hunter.aimTargets[hunter.shotsFired];
-                if (target) {
+                if (target && !target._shot) {
                     let desired = hunterAngleTo(target.x, target.y);
-                    // Ограничим угол ±60°
                     desired = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, desired));
                     hunter.barrelAngle += (desired - hunter.barrelAngle) * Math.min(dt * 10, 1);
                 }
-                // Через 0.35 сек — выстрел
                 if (hunter.stateTime >= 0.35) {
                     let target = hunter.aimTargets[hunter.shotsFired];
                     if (target && !target._shot) {
@@ -552,7 +636,6 @@
                         hunter.state = 'recoil';
                         hunter.stateTime = 0;
                     } else {
-                        // Цель уже исчезла — переходим к следующей
                         hunter.shotsFired++;
                         if (hunter.shotsFired >= hunter.shotsToFire) {
                             hunter.state = 'reload';
@@ -560,7 +643,7 @@
                             sfxReload();
                         } else {
                             hunter.state = 'aim';
-                            hunter.stateTime = 0.2; // быстрее наводимся
+                            hunter.stateTime = 0.2;
                         }
                     }
                 }
@@ -579,46 +662,50 @@
                 }
             } else if (hunter.state === 'reload') {
                 hunter.reloadT = Math.min(1, hunter.stateTime / 0.7);
-                // Ствол опускается вниз и возвращается
-                let down = Math.sin(hunter.reloadT * Math.PI); // 0..1..0
+                let down = Math.sin(hunter.reloadT * Math.PI);
                 hunter.barrelAngle = (Math.PI / 2.5) * down * (hunter.barrelAngle >= 0 ? 1 : -1);
                 if (hunter.stateTime >= 0.7) {
                     hunter.state = 'idle';
                     hunter.stateTime = 0;
                     hunter.barrelAngle = 0;
                     hunter.reloadT = 0;
-                    hunterNextShotAt = gameTime + HUNTER_INTERVAL;
+                    // Если это был обычный залп — сдвигаем таймер.
+                    // Аварийные выстрелы не должны сбивать общий таймер.
+                    if (hunter.shotsToFire > 1) {
+                        hunterNextShotAt = gameTime + HUNTER_INTERVAL;
+                    }
+                    hunter.shotsToFire = 0;
+                    hunter.shotsFired = 0;
                 }
             } else {
-                // idle: ствол плавно возвращается в вертикаль
                 hunter.barrelAngle += (0 - hunter.barrelAngle) * Math.min(dt * 5, 1);
                 hunter.recoil = Math.max(0, hunter.recoil - dt * 4);
             }
 
             if (hunter.flash > 0) hunter.flash -= dt;
 
-            // Трассеры
             for (let i = hunterShots.length - 1; i >= 0; i--) {
                 hunterShots[i].life -= dt;
                 if (hunterShots[i].life <= 0) hunterShots.splice(i, 1);
             }
 
-            // Гильзы
             for (let i = hunter.casings.length - 1; i >= 0; i--) {
                 let c = hunter.casings[i];
                 c.x += c.vx;
                 c.y += c.vy;
-                c.vy += 0.25 * scaleFactor; // гравитация
+                c.vy += 0.25 * scaleFactor;
                 c.rot += c.vrot;
                 c.life -= dt;
                 if (c.life <= 0) hunter.casings.splice(i, 1);
             }
 
-            // Удаляем помеченных врагов
             for (let i = enemies.length - 1; i >= 0; i--) {
                 if (enemies[i]._shot) {
+                    if (!enemies[i].isBoss) {
+                        score += enemyPoints(enemies[i]);
+                        sfxScore();
+                    }
                     enemies.splice(i, 1);
-                    score++;
                 }
             }
         }
@@ -627,7 +714,6 @@
             let hp = getHunterPosition();
             let s = scaleFactor;
 
-            // Тень под охотником
             ctx.save();
             ctx.globalAlpha = 0.3;
             ctx.fillStyle = '#000';
@@ -639,96 +725,71 @@
             ctx.save();
             ctx.translate(hp.x, hp.y);
 
-            // Дыхание: лёгкое вертикальное покачивание
             let breatheY = Math.sin(hunter.breathe) * 1.2 * s;
-            // Отдача: сдвиг вниз-назад
             let recoilY = hunter.recoil * 3 * s;
             let recoilX = hunter.recoil * 2 * s;
-
             ctx.translate(-recoilX, breatheY + recoilY);
 
-            // Ноги
             ctx.fillStyle = '#3e2723';
             ctx.fillRect(-8 * s, 2 * s, 6 * s, 12 * s);
             ctx.fillRect(2 * s, 2 * s, 6 * s, 12 * s);
-            // Ботинки
             ctx.fillStyle = '#1b1b1b';
             ctx.fillRect(-9 * s, 12 * s, 8 * s, 4 * s);
             ctx.fillRect(1 * s, 12 * s, 8 * s, 4 * s);
 
-            // Туловище (куртка)
             ctx.fillStyle = '#5d4037';
             ctx.beginPath();
             ctx.roundRect(-11 * s, -14 * s, 22 * s, 18 * s, 3 * s);
             ctx.fill();
-            // Ремень
             ctx.fillStyle = '#3e2723';
             ctx.fillRect(-11 * s, -2 * s, 22 * s, 3 * s);
             ctx.fillStyle = '#d4af37';
             ctx.fillRect(-2 * s, -2 * s, 4 * s, 3 * s);
 
-            // Руки: одна держит ружьё
             ctx.fillStyle = '#5d4037';
-            ctx.fillRect(8 * s, -10 * s, 5 * s, 10 * s); // правая рука
+            ctx.fillRect(8 * s, -10 * s, 5 * s, 10 * s);
             ctx.fillStyle = '#ffcc80';
-            ctx.fillRect(9 * s, -2 * s, 4 * s, 3 * s);  // кисть
+            ctx.fillRect(9 * s, -2 * s, 4 * s, 3 * s);
 
-            // Голова
             ctx.save();
             ctx.translate(hunter.headTurn * 4 * s, -20 * s);
-            // Шея
             ctx.fillStyle = '#ffcc80';
             ctx.fillRect(-3 * s, 3 * s, 6 * s, 4 * s);
-            // Лицо
-            ctx.fillStyle = '#ffcc80';
             ctx.beginPath();
             ctx.arc(0, 0, 7 * s, 0, Math.PI * 2);
             ctx.fill();
-            // Борода
             ctx.fillStyle = '#5d4037';
             ctx.beginPath();
             ctx.arc(0, 3 * s, 5 * s, 0, Math.PI);
             ctx.fill();
-            // Глаз
             ctx.fillStyle = '#000';
             ctx.fillRect(1 * s, -2 * s, 2 * s, 2 * s);
-            // Шапка
             ctx.fillStyle = '#2e7d32';
             ctx.beginPath();
             ctx.arc(0, -4 * s, 7.5 * s, Math.PI, 0);
             ctx.fill();
             ctx.fillRect(-7.5 * s, -5 * s, 15 * s, 4 * s);
-            // Помпон
             ctx.fillStyle = '#81c784';
             ctx.beginPath();
             ctx.arc(0, -11 * s, 2.5 * s, 0, Math.PI * 2);
             ctx.fill();
             ctx.restore();
 
-            // Ружьё (поворачивается вокруг плеча)
             ctx.save();
-            // Точка вращения — у правого плеча
             ctx.translate(8 * s, -8 * s);
             ctx.rotate(hunter.barrelAngle);
-
-            // Приклад
             ctx.fillStyle = '#6d4c41';
             ctx.fillRect(-2 * s, 8 * s, 6 * s, 10 * s);
-            // Ствол
             ctx.fillStyle = '#333';
             ctx.fillRect(-1.5 * s, -28 * s, 3 * s, 36 * s);
-            // Дуло (утолщение)
             ctx.fillStyle = '#222';
             ctx.fillRect(-2.5 * s, -30 * s, 5 * s, 4 * s);
-            // Мушка
             ctx.fillStyle = '#f1c40f';
             ctx.fillRect(-0.5 * s, -31 * s, 1 * s, 2 * s);
 
-            // Вспышка
             if (hunter.flash > 0) {
                 let a = hunter.flash / 0.12;
                 ctx.globalAlpha = a;
-                // Звезда вспышки
                 ctx.fillStyle = '#fff59d';
                 ctx.beginPath();
                 ctx.arc(0, -32 * s, 7 * s * a, 0, Math.PI * 2);
@@ -737,7 +798,6 @@
                 ctx.beginPath();
                 ctx.arc(0, -32 * s, 4 * s * a, 0, Math.PI * 2);
                 ctx.fill();
-                // Лучи
                 ctx.strokeStyle = '#ffeb3b';
                 ctx.lineWidth = 1.5 * s;
                 for (let k = 0; k < 6; k++) {
@@ -749,12 +809,9 @@
                 }
                 ctx.globalAlpha = 1;
             }
-
+            ctx.restore();
             ctx.restore();
 
-            ctx.restore();
-
-            // Гильзы
             hunter.casings.forEach(c => {
                 ctx.save();
                 ctx.translate(c.x, c.y);
@@ -773,8 +830,6 @@
                 let alpha = shot.life / shot.maxLife;
                 ctx.save();
                 ctx.globalAlpha = alpha;
-
-                // Градиентный трассер: толстый у ствола, тонкий у цели
                 let grad = ctx.createLinearGradient(shot.x1, shot.y1, shot.x2, shot.y2);
                 grad.addColorStop(0, 'rgba(255, 235, 59, 0.9)');
                 grad.addColorStop(1, 'rgba(255, 152, 0, 0.2)');
@@ -784,8 +839,6 @@
                 ctx.moveTo(shot.x1, shot.y1);
                 ctx.lineTo(shot.x2, shot.y2);
                 ctx.stroke();
-
-                // Вспышка на конце
                 ctx.fillStyle = '#ff5722';
                 ctx.beginPath();
                 ctx.arc(shot.x2, shot.y2, 5 * scaleFactor * alpha, 0, Math.PI * 2);
@@ -814,20 +867,14 @@
                 ctx.translate(this.x, this.y);
                 let angle = Math.min(Math.max(this.velocity * 0.05, -0.5), 1.5);
                 ctx.rotate(angle);
-
                 let alpha = 1;
-                if (shieldTime > 0) {
-                    alpha = 0.6 + Math.sin(frameCount * 0.5) * 0.4;
-                }
+                if (shieldTime > 0) alpha = 0.6 + Math.sin(frameCount * 0.5) * 0.4;
                 ctx.globalAlpha = alpha;
-
                 let bodyScale = smallTime > 0 ? 0.75 : 1;
                 ctx.scale(bodyScale, bodyScale);
-
                 ctx.fillStyle = '#ffffff';
                 ctx.fillRect(-8, -8, 20, 16);
                 ctx.fillRect(-4, -12, 12, 8);
-
                 ctx.fillStyle = '#000000';
                 if (this.velocity < 0) {
                     ctx.fillRect(-16, -12, 8, 8);
@@ -836,15 +883,12 @@
                     ctx.fillRect(-16, 4, 8, 8);
                     ctx.fillRect(8, 4, 8, 8);
                 }
-
                 ctx.fillStyle = '#e74c3c';
                 ctx.fillRect(8, -8, 8, 4);
-
                 ctx.fillRect(-4, 8, 4, 8);
                 ctx.fillRect(4, 8, 4, 8);
                 ctx.fillRect(0, -12, 4, 4);
                 ctx.restore();
-
                 if (shieldTime > 0) {
                     ctx.save();
                     ctx.translate(this.x, this.y);
@@ -860,7 +904,6 @@
             update: function() {
                 this.velocity += gravity * scaleFactor;
                 this.y += this.velocity;
-
                 if (this.y + this.height/2 > canvasHeight) {
                     this.y = canvasHeight - this.height/2;
                     isGameOver = true;
@@ -879,7 +922,9 @@
         };
 
         let enemies = [];
+        let bossPending = false;
 
+        // ===== ВРАГИ =====
         const enemyTypes = {
             crow:   { bodyColor: '#444', wingColor: '#111', beakColor: '#f1c40f', eyeColor: '#e74c3c', width: 32, height: 32, speedMin: 2.5, speedMax: 4.0, homingChance: 0.4, scale: 1.0 },
             hawk:   { bodyColor: '#8b4513', wingColor: '#5a2d0c', beakColor: '#ffd700', eyeColor: '#ff4500', width: 36, height: 36, speedMin: 3.5, speedMax: 5.0, homingChance: 0.7, scale: 1.15 },
@@ -890,9 +935,10 @@
         function pickEnemyType() {
             let roll = Math.random();
             let t = Math.min((difficulty - 1.0) / (DIFFICULTY_MAX - 1.0), 1.0);
-            let crowCut = 0.45 - 0.15 * t;
-            let pigeonCut = crowCut + (0.25 - 0.10 * t);
-            let hawkCut = pigeonCut + (0.20 + 0.15 * t);
+            let bias = firstBossDefeated ? 1.0 : 0.6;
+            let crowCut = (0.45 - 0.15 * t) + (firstBossDefeated ? 0 : 0.10);
+            let pigeonCut = crowCut + (0.25 - 0.10 * t) + (firstBossDefeated ? 0 : 0.05);
+            let hawkCut = pigeonCut + (0.20 + 0.15 * t) * bias;
             if (roll < crowCut) return 'crow';
             if (roll < pigeonCut) return 'pigeon';
             if (roll < hawkCut) return 'hawk';
@@ -909,60 +955,243 @@
             const s = t.scale;
             ctx.scale(s, s);
 
-            ctx.fillStyle = t.bodyColor;
-            ctx.fillRect(-8, -8, 20, 16);
-            ctx.fillRect(-4, -12, 12, 8);
-
-            ctx.fillStyle = t.wingColor;
-            let wingOffset = Math.sin(frameCount * 0.3 + enemy.wingPhase) * 3;
-            ctx.fillRect(-16, -12 + wingOffset, 8, 8);
-            ctx.fillRect(8, -12 - wingOffset, 8, 8);
-
-            ctx.fillStyle = t.beakColor;
-            ctx.fillRect(8, -8, 10, 4);
-
-            ctx.fillStyle = t.eyeColor;
-            ctx.fillRect(2, -10, 4, 4);
-
-            ctx.fillStyle = '#000';
-            ctx.fillRect(-4, 8, 4, 8);
-            ctx.fillRect(4, 8, 4, 8);
+            if (enemy.isBoss) {
+                ctx.fillStyle = t.bodyColor;
+                ctx.fillRect(-8, -8, 20, 16);
+                ctx.fillRect(-4, -12, 12, 8);
+                ctx.fillStyle = t.wingColor;
+                let wingOffset = Math.sin(frameCount * 0.3 + enemy.wingPhase) * 3;
+                ctx.fillRect(-20, -14 + wingOffset, 10, 10);
+                ctx.fillRect(10, -14 - wingOffset, 10, 10);
+                ctx.fillStyle = t.beakColor;
+                ctx.fillRect(8, -8, 12, 5);
+                ctx.fillStyle = t.eyeColor;
+                ctx.fillRect(1, -11, 6, 6);
+                ctx.fillStyle = '#000';
+                ctx.fillRect(3, -9, 3, 3);
+                ctx.fillRect(-4, 8, 4, 8);
+                ctx.fillRect(4, 8, 4, 8);
+            } else if (enemy.kind === 'dive') {
+                ctx.fillStyle = t.bodyColor;
+                ctx.fillRect(-8, -8, 20, 16);
+                ctx.fillRect(-4, -12, 12, 8);
+                ctx.fillStyle = t.wingColor;
+                ctx.fillRect(-18, -14, 8, 8);
+                ctx.fillRect(10, -14, 8, 8);
+                ctx.fillStyle = t.beakColor;
+                ctx.fillRect(8, -8, 12, 5);
+                ctx.fillStyle = t.eyeColor;
+                ctx.fillRect(2, -10, 5, 5);
+                ctx.fillStyle = '#000';
+                ctx.fillRect(-4, 8, 4, 8);
+                ctx.fillRect(4, 8, 4, 8);
+            } else if (enemy.kind === 'kamikaze') {
+                ctx.fillStyle = '#b71c1c';
+                ctx.fillRect(-8, -8, 20, 16);
+                ctx.fillRect(-4, -12, 12, 8);
+                ctx.fillStyle = '#7f0000';
+                let wingOffset = Math.sin(frameCount * 0.6 + enemy.wingPhase) * 4;
+                ctx.fillRect(-16, -12 + wingOffset, 8, 8);
+                ctx.fillRect(8, -12 - wingOffset, 8, 8);
+                ctx.fillStyle = '#ffeb3b';
+                ctx.fillRect(8, -8, 10, 4);
+                ctx.fillStyle = '#ff0000';
+                ctx.fillRect(2, -10, 5, 5);
+                ctx.fillStyle = '#000';
+                ctx.fillRect(-4, 8, 4, 8);
+                ctx.fillRect(4, 8, 4, 8);
+            } else if (enemy.kind === 'wounded') {
+                ctx.fillStyle = '#6a1b9a';
+                ctx.fillRect(-8, -8, 20, 16);
+                ctx.fillRect(-4, -12, 12, 8);
+                ctx.fillStyle = '#4a148c';
+                let wingOffset = Math.sin(frameCount * 0.8 + enemy.wingPhase) * 5;
+                ctx.fillRect(-16, -12 + wingOffset, 8, 8);
+                ctx.fillRect(8, -12 - wingOffset, 8, 8);
+                ctx.fillStyle = '#ffd54f';
+                ctx.fillRect(8, -8, 10, 4);
+                ctx.fillStyle = '#ff6b6b';
+                ctx.fillRect(2, -10, 5, 5);
+                ctx.fillStyle = '#000';
+                ctx.fillRect(-4, 8, 4, 8);
+                ctx.fillRect(4, 8, 4, 8);
+            } else {
+                ctx.fillStyle = t.bodyColor;
+                ctx.fillRect(-8, -8, 20, 16);
+                ctx.fillRect(-4, -12, 12, 8);
+                ctx.fillStyle = t.wingColor;
+                let wingOffset = Math.sin(frameCount * 0.3 + enemy.wingPhase) * 3;
+                ctx.fillRect(-16, -12 + wingOffset, 8, 8);
+                ctx.fillRect(8, -12 - wingOffset, 8, 8);
+                ctx.fillStyle = t.beakColor;
+                ctx.fillRect(8, -8, 10, 4);
+                ctx.fillStyle = t.eyeColor;
+                ctx.fillRect(2, -10, 4, 4);
+                ctx.fillStyle = '#000';
+                ctx.fillRect(-4, 8, 4, 8);
+                ctx.fillRect(4, 8, 4, 8);
+            }
             ctx.restore();
+
+            if (enemy.isBoss) {
+                let w = 60 * scaleFactor;
+                let h = 6 * scaleFactor;
+                let bx = enemy.x - w/2;
+                let by = enemy.y - 40 * scaleFactor;
+                ctx.save();
+                ctx.fillStyle = 'rgba(0,0,0,0.6)';
+                ctx.fillRect(bx - 1, by - 1, w + 2, h + 2);
+                ctx.fillStyle = '#e74c3c';
+                ctx.fillRect(bx, by, w * (enemy.hp / enemy.maxHp), h);
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(bx, by, w, h);
+                ctx.restore();
+            }
         }
 
-        function spawnEnemy() {
-            let typeName = pickEnemyType();
+        function createEnemy(kind, opts = {}) {
+            let typeName = opts.typeName || pickEnemyType();
             let t = enemyTypes[typeName];
-            let spawnY = Math.random() * (canvasHeight - 80) + 40;
+            let spawnY = opts.y !== undefined ? opts.y : Math.random() * (canvasHeight - 80) + 40;
             let speedMul = 1 + (difficulty - 1.0) * 0.35;
-            let baseSpeed = (t.speedMin + Math.random() * (t.speedMax - t.speedMin));
+            let baseSpeed = opts.speed !== undefined ? opts.speed : (t.speedMin + Math.random() * (t.speedMax - t.speedMin));
             let speed = baseSpeed * speedMul * scaleFactor;
             let homingChance = Math.min(t.homingChance * (1 + (difficulty - 1.0) * 0.3), 0.95);
-            let isHoming = Math.random() < homingChance;
+            let isHoming = opts.homing !== undefined ? opts.homing : (Math.random() < homingChance);
             let homingStrength = (0.04 + Math.random() * 0.03) * (1 + (difficulty - 1.0) * 0.25);
 
-            enemies.push({
-                x: canvasWidth + 40,
+            return {
+                x: opts.x !== undefined ? opts.x : canvasWidth + 40,
                 y: spawnY,
-                vx: -speed,
-                vy: 0,
-                width: t.width,
-                height: t.height,
+                vx: -(opts.vx !== undefined ? opts.vx : speed),
+                vy: opts.vy || 0,
+                width: t.width, height: t.height,
                 hitboxRadius: t.width * 0.4,
                 homing: isHoming,
                 homingStrength: homingStrength,
                 type: t,
                 typeName: typeName,
                 wingPhase: Math.random() * Math.PI * 2,
-                _shot: false
+                _shot: false,
+                kind: kind,
+                isBoss: false
+            };
+        }
+
+        function spawnRegularEnemy() { enemies.push(createEnemy('regular')); }
+
+        function spawnDiveEagle() {
+            let e = createEnemy('dive', {
+                typeName: 'eagle',
+                x: canvasWidth - 40 - Math.random() * 200,
+                y: -60,
+                speed: 2.5
             });
+            e.vx = -1.5 * scaleFactor;
+            e.vy = 3.5 * scaleFactor;
+            e.homing = false;
+            e.diveTimer = 0;
+            enemies.push(e);
+        }
+
+        function spawnKamikaze() {
+            let e = createEnemy('kamikaze', { typeName: 'crow' });
+            e.homing = true;
+            e.homingStrength = 0.08;
+            e.kamikaze = true;
+            e.accel = 0;
+            enemies.push(e);
+        }
+
+        function spawnFlock() {
+            let count = 3 + Math.floor(Math.random() * 3);
+            let baseY = Math.random() * (canvasHeight - 160) + 80;
+            let gapY = 40 * scaleFactor;
+            for (let k = 0; k < count; k++) {
+                let y = baseY + (k - (count - 1) / 2) * gapY;
+                y = Math.max(40, Math.min(canvasHeight - 40, y));
+                let e = createEnemy('pigeon', {
+                    typeName: 'pigeon',
+                    x: canvasWidth + 40 + k * 30 * scaleFactor,
+                    y: y,
+                    speed: 2.5 + Math.random() * 0.8,
+                    homing: false
+                });
+                e.flock = true;
+                enemies.push(e);
+            }
+        }
+
+        function spawnWounded() {
+            let e = createEnemy('wounded', { typeName: 'pigeon' });
+            e.homing = false;
+            e.wounded = true;
+            e.baseY = e.y;
+            e.wavePhase = Math.random() * Math.PI * 2;
+            e.waveAmp = 30 + Math.random() * 30;
+            enemies.push(e);
+        }
+
+        function spawnBoss() {
+            let t = enemyTypes.eagle;
+            let boss = {
+                x: canvasWidth + 80,
+                y: canvasHeight / 2,
+                vx: -1.2 * scaleFactor,
+                vy: 0,
+                width: t.width * 2.2,
+                height: t.height * 2.2,
+                hitboxRadius: t.width * 0.9,
+                homing: false,
+                homingStrength: 0,
+                type: t,
+                typeName: 'eagle',
+                wingPhase: 0,
+                _shot: false,
+                kind: 'boss',
+                isBoss: true,
+                hp: 5,
+                maxHp: 5,
+                wobble: 0
+            };
+            enemies.push(boss);
+            sfxBossRoar();
+        }
+
+        let nextRareAt = 10;
+        let nextBossAt = 50;
+
+        function pickRareKind() {
+            let kinds = firstBossDefeated
+                ? ['dive', 'kamikaze', 'flock', 'wounded']
+                : ['flock', 'wounded'];
+            return kinds[Math.floor(Math.random() * kinds.length)];
         }
 
         function updateEnemies() {
             if (isGameRunning && !isGameOver) {
-                let spawnChance = 0.012 + (difficulty - 1.0) * 0.012;
+                let baseSpawn = firstBossDefeated ? 0.012 : 0.008;
+                let spawnChance = baseSpawn + (difficulty - 1.0) * 0.012;
                 spawnChance *= (0.85 + Math.random() * 0.3);
-                if (Math.random() < spawnChance) spawnEnemy();
+                if (Math.random() < spawnChance) spawnRegularEnemy();
+
+                if (score >= nextRareAt) {
+                    let kind = pickRareKind();
+                    if (kind === 'dive') spawnDiveEagle();
+                    else if (kind === 'kamikaze') spawnKamikaze();
+                    else if (kind === 'flock') spawnFlock();
+                    else spawnWounded();
+                    nextRareAt += 10;
+                }
+
+                if (score >= nextBossAt && !bossPending) bossPending = true;
+            }
+
+            if (bossPending && !enemies.some(e => e.isBoss)) {
+                spawnBoss();
+                bossPending = false;
+                nextBossAt += 50;
             }
 
             let slowMul = slowTime > 0 ? 0.5 : 1;
@@ -970,42 +1199,92 @@
             for (let i = enemies.length - 1; i >= 0; i--) {
                 let e = enemies[i];
                 if (e._shot) continue;
-                
-                if (e.homing && isGameRunning && !isGameOver) {
-                    let dy = bird.y - e.y;
+
+                if (e.kind === 'dive') {
+                    e.diveTimer += 1/60;
+                    if (e.diveTimer < 0.8) {
+                        e.x += e.vx * slowMul;
+                        e.y += e.vy * 0.3 * slowMul;
+                    } else {
+                        let dx = bird.x - e.x;
+                        let dy = bird.y - e.y;
+                        let dist = Math.sqrt(dx*dx + dy*dy) || 1;
+                        e.vx = (dx / dist) * 6 * scaleFactor;
+                        e.vy = (dy / dist) * 6 * scaleFactor;
+                        e.x += e.vx * slowMul;
+                        e.y += e.vy * slowMul;
+                    }
+                } else if (e.kind === 'kamikaze') {
                     let dx = bird.x - e.x;
+                    let dy = bird.y - e.y;
                     let dist = Math.sqrt(dx*dx + dy*dy);
-                    if (dist > 0) {
-                        let targetVy = (dy / dist) * Math.abs(e.vx) * 1.2;
+                    if (dist < 300 * scaleFactor) e.accel = Math.min(e.accel + 0.02, 0.5);
+                    e.vx = -Math.abs(e.vx) - e.accel * scaleFactor;
+                    if (e.homing) {
+                        let targetVy = (dy / (dist || 1)) * Math.abs(e.vx) * 1.2;
                         e.vy += (targetVy - e.vy) * e.homingStrength;
                     }
+                    e.x += e.vx * slowMul;
+                    e.y += e.vy * slowMul;
+                } else if (e.kind === 'wounded') {
+                    e.wavePhase += 0.08;
+                    e.x += e.vx * slowMul;
+                    e.y = e.baseY + Math.sin(e.wavePhase) * e.waveAmp;
+                    e.vy = Math.cos(e.wavePhase) * e.waveAmp * 0.1;
+                } else if (e.isBoss) {
+                    e.wobble += 0.05;
+                    e.x += e.vx * slowMul;
+                    e.y = canvasHeight / 2 + Math.sin(e.wobble) * 120;
+                    e.vy = Math.cos(e.wobble) * 6;
+                } else {
+                    if (e.homing && isGameRunning && !isGameOver) {
+                        let dy = bird.y - e.y;
+                        let dx = bird.x - e.x;
+                        let dist = Math.sqrt(dx*dx + dy*dy);
+                        if (dist > 0) {
+                            let targetVy = (dy / dist) * Math.abs(e.vx) * 1.2;
+                            e.vy += (targetVy - e.vy) * e.homingStrength;
+                        }
+                    }
+                    e.x += e.vx * slowMul;
+                    e.y += e.vy * slowMul;
                 }
-                
-                e.x += e.vx * slowMul;
-                e.y += e.vy * slowMul;
-                
-                if (e.y < 20) { e.y = 20; e.vy = Math.abs(e.vy) * 0.5; }
-                if (e.y > canvasHeight - 20) { e.y = canvasHeight - 20; e.vy = -Math.abs(e.vy) * 0.5; }
-                
+
+                if (e.kind !== 'dive' && !e.isBoss) {
+                    if (e.y < 20) { e.y = 20; e.vy = Math.abs(e.vy) * 0.5; }
+                    if (e.y > canvasHeight - 20) { e.y = canvasHeight - 20; e.vy = -Math.abs(e.vy) * 0.5; }
+                }
+
                 let dx = bird.x - e.x;
                 let dy = bird.y - e.y;
                 let dist = Math.sqrt(dx*dx + dy*dy);
                 let minDist = bird.hitboxRadius * scaleFactor + e.hitboxRadius * scaleFactor;
-                
+
                 if (dist < minDist) {
                     if (shieldTime > 0) {
-                        enemies.splice(i, 1);
+                        if (e.isBoss) {
+                            e.hp -= 1;
+                            if (e.hp <= 0) {
+                                e._shot = true;
+                                score += POINTS_RARE.boss;
+                            }
+                        } else {
+                            score += enemyPoints(e);
+                            enemies.splice(i, 1);
+                        }
                         sfxShieldBreak();
                         continue;
                     } else {
                         isGameOver = true;
                     }
                 }
-                
-                if (e.x < -80) {
+
+                if (e.x < -100 || (e.kind === 'dive' && e.y > canvasHeight + 80)) {
+                    if (!e.isBoss) {
+                        score += enemyPoints(e);
+                        sfxScore();
+                    }
                     enemies.splice(i, 1);
-                    score++;
-                    sfxScore();
                 }
             }
         }
@@ -1044,7 +1323,6 @@
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
                 ctx.fillText(label, x + size/2, y + size/2 + 1);
-                
                 ctx.fillStyle = 'rgba(0,0,0,0.5)';
                 ctx.fillRect(x, y + size + 2, size, 4 * scaleFactor);
                 ctx.fillStyle = color;
@@ -1068,7 +1346,6 @@
 
             if (isGameRunning && !isGameOver) {
                 updateDifficulty(dt);
-
                 if (shieldTime > 0) shieldTime -= dt;
                 if (slowTime > 0) slowTime -= dt;
                 if (smallTime > 0) smallTime -= dt;
@@ -1083,7 +1360,6 @@
 
             drawHunter();
             drawHunterShots();
-
             bonuses.forEach(b => drawBonus(b));
             enemies.forEach(e => drawEnemy(e));
             bird.draw();
@@ -1149,6 +1425,7 @@
             frameCount = 0;
             gameTime = 0;
             difficulty = 1.0;
+            firstBossDefeated = false;
             lastTime = 0;
             shieldTime = 0;
             slowTime = 0;
@@ -1168,6 +1445,10 @@
             hunter.casings = [];
             hunter.flash = 0;
             hunter.reloadT = 0;
+            nextRareAt = 10;
+            nextBossAt = 50;
+            bossPending = false;
+            panicNextAt = 0;
             
             startScreen.classList.add('hidden');
             gameOverScreen.classList.add('hidden');
